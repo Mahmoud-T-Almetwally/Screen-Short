@@ -1,0 +1,21 @@
+[paths]
+ask_before_save = false
+save_dir = "~/Pictures/Screenshots"
+
+[appearance]
+selection_border_width = 2
+selection_border_color = "#1E90FF"
+tooltip_bg_color = "#282828"
+tooltip_font_color = "#EBDBB2"
+initial_selection = "window"
+
+[behavior]
+copy_to_clipboard = true
+open_after_save = false
+
+[editing]
+shape_border_color = "#1E90FF"
+shape_border_width = 2
+shape_rect = true
+shape_arrow = true
+shape_circle = true
