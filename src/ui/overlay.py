@@ -1,12 +1,14 @@
 import io
 import math
-import subprocess
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QApplication
 from PySide6.QtCore import Qt, QRect, QPoint, QBuffer
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor, QImage
 
 from .toolbar import EditingToolbar
 from PIL import Image, ImageDraw
+
+from datetime import datetime
+from pathlib import Path
 
 class ScreenshotOverlay(QWidget):
     def __init__(self, fullscreen_capture_data, conf):
@@ -21,21 +23,17 @@ class ScreenshotOverlay(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.CrossCursor)
 
-        # --- State Management ---
         self.selection_rect = None
         self.shape_edits = []
         self.current_drawing_shape = None
         
-        # Tracks current action: None, 'selecting', 'move', 'resize_br', 'draw_rect', etc.
         self.current_action = 'selecting' 
         self.drag_start_position = None
 
-        # --- UI Elements ---
         self.toolbar = EditingToolbar(self.conf, self)
         self.toolbar.hide()
 
     def set_active_tool(self, tool_name):
-        """Callback from the toolbar to set the current drawing tool."""
         if self.current_action == tool_name:
             self.current_action = None
             self.toolbar.uncheck_all_except(None)
@@ -45,7 +43,6 @@ class ScreenshotOverlay(QWidget):
         self.update_cursor()
 
     def update_toolbar_position(self):
-        """Positions the toolbar neatly below or above the selection area."""
         if not self.selection_rect or not self.selection_rect.isValid():
             return
         
@@ -60,7 +57,6 @@ class ScreenshotOverlay(QWidget):
             self.toolbar.show()
 
     def get_handle_at_pos(self, pos):
-        """Checks if a given position is on a resize handle or within the selection for moving."""
         if not self.selection_rect:
             return None
         
@@ -74,9 +70,7 @@ class ScreenshotOverlay(QWidget):
         return None
 
     def update_cursor(self):
-        """Sets the cursor icon based on the current context (hover position and active tool)."""
         if self.current_action and 'draw' in self.current_action:
-            # Only show cross cursor for drawing if inside the selection
             if self.selection_rect and self.selection_rect.contains(self.mapFromGlobal(QCursor.pos())):
                  self.setCursor(Qt.CursorShape.CrossCursor)
             else:
@@ -91,10 +85,7 @@ class ScreenshotOverlay(QWidget):
         else:
             self.setCursor(Qt.CursorShape.CrossCursor)
 
-    # --- Helper for Drawing Constraints ---
-
     def _clamp_point_to_selection(self, point):
-        """Constrains a QPoint to be within the boundaries of the selection_rect."""
         if not self.selection_rect:
             return point
 
@@ -102,14 +93,12 @@ class ScreenshotOverlay(QWidget):
         clamped_y = max(self.selection_rect.top(), min(point.y(), self.selection_rect.bottom()))
         return QPoint(clamped_x, clamped_y)
 
-    # --- Event Handlers ---
-
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
             if self.selection_rect and self.selection_rect.isValid():
                 self.capture_and_exit()
         elif event.key() == Qt.Key.Key_Escape:
-            self.close()
+            QApplication.quit()
 
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
@@ -117,12 +106,9 @@ class ScreenshotOverlay(QWidget):
 
         self.drag_start_position = event.pos()
 
-        # If a tool is active, start drawing a shape
         if self.current_action and 'draw' in self.current_action:
-            # >>> NEW: Check if the draw action starts inside the selection rectangle
             if not self.selection_rect or not self.selection_rect.contains(event.pos()):
-                # If outside, do not start a drawing action
-                self.drag_start_position = None # Prevent move/drag artifacts
+                self.drag_start_position = None
                 return
 
             shape_type = self.current_action.split('_')[1]
@@ -132,7 +118,6 @@ class ScreenshotOverlay(QWidget):
                 'end_pos': event.pos()
             }
         else:
-            # Check if we are starting a move/resize or a new selection
             handle = self.get_handle_at_pos(event.pos())
             if handle:
                 self.current_action = handle
@@ -152,7 +137,6 @@ class ScreenshotOverlay(QWidget):
         delta = event.pos() - self.drag_start_position
 
         if self.current_drawing_shape:
-            # >>> NEW: Clamp the end position to the selection rectangle's boundaries
             clamped_pos = self._clamp_point_to_selection(event.pos())
             self.current_drawing_shape['end_pos'] = clamped_pos
         elif self.current_action == 'selecting':
@@ -189,9 +173,6 @@ class ScreenshotOverlay(QWidget):
         self.update_cursor()
         self.update()
 
-
-    # --- Drawing Logic ---
-
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -219,7 +200,6 @@ class ScreenshotOverlay(QWidget):
             self.draw_shape(painter, self.current_drawing_shape)
 
     def draw_shape(self, painter, shape_data):
-        """Helper function to draw a shape on the QPainter canvas."""
         start = shape_data['start_pos']
         end = shape_data['end_pos']
         rect = QRect(start, end).normalized()
@@ -244,45 +224,65 @@ class ScreenshotOverlay(QWidget):
             painter.drawLine(end, p1)
             painter.drawLine(end, p2)
 
-
-    # --- Final Capture and Save ---
-
     def capture_and_exit(self):
         self.hide()
         self.toolbar.close()
         
-        cropped_pixmap = self.background_pixmap.copy(self.selection_rect.normalized())
+        try:
+            cropped_pixmap = self.background_pixmap.copy(self.selection_rect.normalized())
 
-        buffer = QBuffer()
-        buffer.open(QBuffer.OpenModeFlag.ReadWrite)
-        cropped_pixmap.save(buffer, "PNG")
-        image_data = buffer.data()
-        
-        image = Image.open(io.BytesIO(image_data))
-        draw = ImageDraw.Draw(image)
-
-        crop_x, crop_y = self.selection_rect.x(), self.selection_rect.y()
-        color = self.conf['editing']['shape_border_color']
-        width = self.conf['editing']['shape_border_width']
-
-        for shape in self.shape_edits:
-            start_local = (shape['start_pos'].x() - crop_x, shape['start_pos'].y() - crop_y)
-            end_local = (shape['end_pos'].x() - crop_x, shape['end_pos'].y() - crop_y)
+            buffer = QBuffer()
+            buffer.open(QBuffer.OpenModeFlag.ReadWrite)
+            cropped_pixmap.save(buffer, "PNG")
+            image_data = buffer.data()
             
-            if shape['type'] == 'rect':
-                draw.rectangle([start_local, end_local], outline=color, width=width)
-            elif shape['type'] == 'circle':
-                draw.ellipse([start_local, end_local], outline=color, width=width)
-            elif shape['type'] == 'arrow':
-                draw.line([start_local, end_local], fill=color, width=width)
-        
-        final_image_buffer = io.BytesIO()
-        image.save(final_image_buffer, format="PNG")
-        final_image_data = final_image_buffer.getvalue()
+            image = Image.open(io.BytesIO(image_data))
+            draw = ImageDraw.Draw(image)
 
-        save_path = self.conf['paths']['save_dir'] + "screenshot.png"
-        with open(save_path, "wb") as f:
-            f.write(final_image_data)
-        subprocess.run(['wl-copy'], input=final_image_data)
+            crop_x, crop_y = self.selection_rect.x(), self.selection_rect.y()
+            color = self.conf['editing']['shape_border_color']
+            width = self.conf['editing']['shape_border_width']
+
+            for shape in self.shape_edits:
+                start_local = (shape['start_pos'].x() - crop_x, shape['start_pos'].y() - crop_y)
+                end_local = (shape['end_pos'].x() - crop_x, shape['end_pos'].y() - crop_y)
+                
+                if shape['type'] == 'rect':
+                    draw.rectangle([start_local, end_local], outline=color, width=width)
+                elif shape['type'] == 'circle':
+                    draw.ellipse([start_local, end_local], outline=color, width=width)
+                elif shape['type'] == 'arrow':
+                    draw.line([start_local, end_local], fill=color, width=width)
+            
+            final_image_buffer = io.BytesIO()
+            image.save(final_image_buffer, format="PNG")
+            final_image_data = final_image_buffer.getvalue()
+
+            if self.conf['behavior'].get('copy_to_clipboard', True):
+                q_img = QImage.fromData(final_image_data)
+                QApplication.clipboard().setImage(q_img)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            image_name = f"screenshot-{timestamp}.png"
+
+            config_save_dir = self.conf['paths']['save_dir']
+            
+            save_path_obj = Path(config_save_dir).expanduser()
+
+            if not save_path_obj.is_absolute():
+                full_directory = Path.home() / save_path_obj
+            else:
+                full_directory = save_path_obj
+
+            full_directory.mkdir(parents=True, exist_ok=True)
+
+            save_path = full_directory / image_name
+            with open(save_path, "wb") as f:
+                f.write(final_image_data)
+            
+            print(f"Screenshot saved to: {save_path}")
+
+        except Exception as e:
+            print(f"Error saving screenshot: {e}")
         
-        self.close()
+        QApplication.quit()

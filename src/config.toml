@@ -1,6 +1,6 @@
 [paths]
 ask_before_save = false
-save_dir = "~/Pictures/Screenshots"
+save_dir = "Pictures/Screenshots"
 
 [appearance]
 selection_border_width = 2
